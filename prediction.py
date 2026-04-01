@@ -25,28 +25,35 @@ def create_sequences(X: np.ndarray, y: np.ndarray, window: int, horizon: int):
 def prepare_product_timeseries(df: pd.DataFrame, product_id: str):
     df = df.copy()
     df["Date"] = pd.to_datetime(df["Date"])
-    df = df[df["Product ID"] == product_id].sort_values("Date")
+    df = df[df["Product ID"] == product_id].sort_values("Date").reset_index(drop=True)
 
     if df.empty:
         raise ValueError(f"Product ID '{product_id}' not found.")
 
-    def mode_or_nan(s: pd.Series):
-        s = s.dropna()
-        return s.mode().iloc[0] if not s.mode().empty else np.nan
+    # train_cleaned.csv / test_cleaned.csv already have one row per (Product ID, Date)
+    # — no aggregation needed. The old groupby block below is kept for reference.
+    #
+    # def mode_or_nan(s: pd.Series):
+    #     s = s.dropna()
+    #     return s.mode().iloc[0] if not s.mode().empty else np.nan
+    #
+    # daily = (
+    #     df.groupby("Date", as_index=False)
+    #     .agg(
+    #         {
+    #             "Units Sold": "sum",
+    #             "Seasonality": mode_or_nan,
+    #             "Category": mode_or_nan,
+    #             "Holiday/Promotion": "max",
+    #         }
+    #     )
+    #     .sort_values("Date")
+    #     .reset_index(drop=True)
+    # )
 
-    daily = (
-        df.groupby("Date", as_index=False)
-        .agg(
-            {
-                "Units Sold": "sum",
-                "Seasonality": mode_or_nan,
-                "Category": mode_or_nan,
-                "Holiday/Promotion": "max",
-            }
-        )
-        .sort_values("Date")
-        .reset_index(drop=True)
-    )
+    daily = df[
+        ["Date", "Units Sold", "Seasonality", "Category", "Holiday/Promotion"]
+    ].copy()
 
     daily = pd.get_dummies(
         daily,
@@ -237,10 +244,10 @@ def plot_summary(all_results: dict):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--window", type=int, default=30)
-    parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch_size", type=int, default=32)
-    parser.add_argument("--train_path", type=str, default="./dataset/split/train.csv")
-    parser.add_argument("--test_path", type=str, default="./dataset/split/test.csv")
+    parser.add_argument("--train_path", type=str, default="./dataset/train_cleaned.csv")
+    parser.add_argument("--test_path", type=str, default="./dataset/test_cleaned.csv")
     args = parser.parse_args()
 
     train_df = pd.read_csv(args.train_path)
