@@ -30,27 +30,6 @@ def prepare_product_timeseries(df: pd.DataFrame, product_id: str):
     if df.empty:
         raise ValueError(f"Product ID '{product_id}' not found.")
 
-    # train_cleaned.csv / test_cleaned.csv already have one row per (Product ID, Date)
-    # — no aggregation needed. The old groupby block below is kept for reference.
-    #
-    # def mode_or_nan(s: pd.Series):
-    #     s = s.dropna()
-    #     return s.mode().iloc[0] if not s.mode().empty else np.nan
-    #
-    # daily = (
-    #     df.groupby("Date", as_index=False)
-    #     .agg(
-    #         {
-    #             "Units Sold": "sum",
-    #             "Seasonality": mode_or_nan,
-    #             "Category": mode_or_nan,
-    #             "Holiday/Promotion": "max",
-    #         }
-    #     )
-    #     .sort_values("Date")
-    #     .reset_index(drop=True)
-    # )
-
     daily = df[
         ["Date", "Units Sold", "Seasonality", "Category", "Holiday/Promotion"]
     ].copy()
@@ -169,8 +148,9 @@ def run_product(product_id, train_df, test_df, window, epochs, batch_size):
         pred_scaled = model.predict(X_te, verbose=0).reshape(-1, 1)
         pred = y_scaler.inverse_transform(pred_scaled).reshape(-1)
         y_true = y_test_raw[window + horizon - 1 :]
+        dates = test_daily["Date"].values[window + horizon - 1 :]
         n = min(len(y_true), len(pred))
-        y_true, pred = y_true[:n], pred[:n]
+        y_true, pred, dates = y_true[:n], pred[:n], dates[:n]
 
         results[horizon_name] = {
             "WAPE": round(wape(y_true, pred), 2),
@@ -179,7 +159,7 @@ def run_product(product_id, train_df, test_df, window, epochs, batch_size):
             "sMAPE": round(smape(y_true, pred), 2),
         }
         # Lưu raw arrays để gộp toàn bộ products khi tính metric tổng hợp
-        predictions[horizon_name] = (y_true, pred)
+        predictions[horizon_name] = (y_true, pred, dates)
 
     return results, predictions
 
@@ -196,13 +176,14 @@ def plot_product(product_id: str, predictions: dict):
         axes = [axes]
     fig.suptitle(f"Product {product_id} — Actual vs Predicted", fontsize=13)
     for ax, name in zip(axes, horizon_names):
-        y_true, pred = predictions[name]
-        ax.plot(y_true, label="Actual", color="black", linewidth=0.8)
-        ax.plot(pred, label="Predicted", color="tomato", linewidth=1.2)
+        y_true, pred, dates = predictions[name]
+        ax.plot(dates, y_true, label="Actual", color="black", linewidth=0.8)
+        ax.plot(dates, pred, label="Predicted", color="tomato", linewidth=1.2)
         ax.set_title(name)
-        ax.set_xlabel("Time step (test)")
+        ax.set_xlabel("Date")
         ax.set_ylabel("Units Sold")
         ax.legend(fontsize=8)
+        ax.tick_params(axis="x", rotation=45)
     plt.tight_layout()
     plt.show()
 
@@ -248,10 +229,27 @@ def main():
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--train_path", type=str, default="./dataset/train_cleaned.csv")
     parser.add_argument("--test_path", type=str, default="./dataset/test_cleaned.csv")
+    parser.add_argument(
+        "--test_days",
+        type=int,
+        default=None,
+        help="Chỉ dùng N ngày đầu của test set (mỗi product). Mặc định dùng toàn bộ.",
+    )
     args = parser.parse_args()
 
     train_df = pd.read_csv(args.train_path)
     test_df = pd.read_csv(args.test_path)
+
+    if args.test_days is not None:
+        test_df["Date"] = pd.to_datetime(test_df["Date"])
+        cutoff_dates = (
+            test_df.groupby("Product ID")["Date"]
+            .min()
+            .add(pd.Timedelta(days=args.test_days - 1))
+        )
+        test_df = test_df[
+            test_df.apply(lambda r: r["Date"] <= cutoff_dates[r["Product ID"]], axis=1)
+        ].reset_index(drop=True)
 
     all_results = {}
     # Gộp raw predictions theo horizon: {horizon_name: ([y_true...], [y_pred...])}
@@ -271,11 +269,22 @@ def main():
             args.batch_size,
         )
         all_results[product_id] = results
+
+        # In metrics từng product
+        rows = []
+        for horizon_name, metrics in results.items():
+            if metrics is not None:
+                rows.append({"Horizon": horizon_name, **metrics})
+        if rows:
+            prod_df = pd.DataFrame(rows).set_index("Horizon")
+            print(f"\n  Metrics — {product_id}:")
+            print(prod_df.to_string())
+
         plot_product(product_id, predictions)
 
         # Tích lũy raw arrays để tính metric gộp sau
         for horizon_name, pair in predictions.items():
-            y_true, y_pred = pair
+            y_true, y_pred, _ = pair
             all_preds[horizon_name][0].append(y_true)
             all_preds[horizon_name][1].append(y_pred)
 
